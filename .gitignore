@@ -1,0 +1,26 @@
+# Build artifacts
+Debug/
+Release/
+*.o
+*.d
+*.su
+*.cyclo
+*.elf
+*.hex
+*.map
+*.list
+
+# IDE / workspace
+.metadata/
+*.launch
+.settings/
+
+# Tai lieu noi bo cua chuong trinh - khong dua len repo cong khai
+*.docx
+*.pdf
+~$*
+
+# Python
+__pycache__/
+.venv/
+*.log
