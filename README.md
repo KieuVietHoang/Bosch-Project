@@ -6,7 +6,7 @@ trên vi điều khiển STM32F405RGT6 (board Waveshare Open405R-C):
 | Thư mục | Bài | Nội dung |
 |---|---|---|
 | [`diagnostic/`](diagnostic) | Chẩn đoán | UDS (ISO 14229) trên nền CAN-TP (ISO 15765-2) |
-| [`communication/`](communication) | Truyền thông | Trao đổi khung định kỳ giữa hai node CAN, có checksum |
+| [`communication/`](communication) | Truyền thông | Trao đổi khung định kỳ giữa hai node CAN, có checksum. Có hai bản dựng: [`one-board/`](communication/one-board) (bản cuối, đã nghiệm thu đủ) và [`two-boards/`](communication/two-boards) |
 
 Không có mạch gỡ lỗi phần cứng (ST-Link) trong suốt quá trình — mọi việc chẩn đoán
 đều qua UART, nên phần lớn công sức nằm ở chỗ làm cho firmware **tự nói ra được
@@ -52,8 +52,28 @@ chưa mở khoá (`0x33`), khoá sai (`0x35`) — khoá sai còn kèm hình ph�
 
 # Bài 2 — Truyền thông CAN
 
-Hai board Open405R-C rời, mỗi board một node, nối với nhau bằng một bus CAN thật.
-**Cả hai đều dùng CAN1 (`PA11`/`PA12`)** — xem phần xung đột chân bên dưới.
+Node 1 là phần được chấm điểm. Node 2 đóng vai Verification Board của phòng lab —
+gửi dữ liệu định kỳ, và **tự kiểm tra lại** khung mà Node 1 trả về đúng theo cách
+board thật sẽ làm, nên nghiệm thu được toàn bộ mà không cần thiết bị của lab.
+
+Repo có hai bản dựng cho bài này. Cả hai đều chạy thật; khác nhau ở chỗ Node 2
+nằm ở đâu.
+
+### [`one-board/`](communication/one-board) — bản cuối, đã nghiệm thu đủ 7/7
+
+```
+        ┌──────── một board Open405R-C ────────┐
+        │  CAN1 ──0x012 mỗi 50 ms──►  CAN2     │
+        │  Node1  ◄──0x0A2 mỗi 20 ms── Node2   │
+        └──────────────────────────────────────┘
+             hai transceiver nối bằng dây, trở 120Ω
+```
+
+Hai bộ điều khiển CAN độc lập trên cùng một MCU, nói chuyện qua một bus vật lý
+thật. Không phải mô phỏng phần mềm — có transceiver, có dây, có trở đầu cuối,
+có định thời bit vi sai thật.
+
+### [`two-boards/`](communication/two-boards) — hai board rời
 
 ```
 [Node 1 · board 1]  ──0x012 mỗi 50 ms──►  [Node 2 · board 2]
@@ -61,15 +81,16 @@ Hai board Open405R-C rời, mỗi board một node, nối với nhau bằng mộ
                     ◄──0x0A2 mỗi 20 ms──
 ```
 
-Node 1 là phần được chấm điểm. Node 2 đóng vai Verification Board của phòng lab —
-gửi dữ liệu định kỳ, và **tự kiểm tra lại** khung mà Node 1 trả về đúng theo cách
-board thật sẽ làm, nên có thể nghiệm thu toàn bộ mà không cần thiết bị của lab.
+Bản đầu tiên, hai board Open405R-C riêng biệt, mỗi board một node, cả hai dùng
+CAN1 (`PA11`/`PA12`). Phần CAN đã nghiệm thu đầy đủ; riêng LCD thì chưa chạy
+được ở thời điểm đó.
 
 | Thành phần | Vai trò |
 |---|---|
 | `can012.c` | Bố cục khung `0x012`/`0x0A2` và hàm checksum |
 | `node1.c` | Logic Node 1 — nhận `0x0A2`, dựng và phát `0x012` đúng chu kỳ |
-| `node2.c` | Logic Node 2 — phát `0x0A2`, thẩm định `0x012` nhận được |
+| `node2.c` | Logic Node 2 trên board rời — phát `0x0A2`, thẩm định `0x012` nhận được |
+| `node2sim.c` | Bản một-board của Node 2, chạy trên CAN2 cùng MCU. Nhịp 20 ms lấy từ `HAL_GetTick()` chứ không dùng timer phần cứng — TIM2 để dành cho nhịp 50 ms của Node 1, vốn là thứ được chấm |
 | `lcd.c` | Driver ST7789 qua SPI1, vẽ bằng DMA |
 | `uart_log.c` | Nhật ký UART không chặn — hàng đợi vòng, DMA rút |
 
@@ -117,7 +138,7 @@ Kết quả sau khi sửa, vẫn đang in đầy đủ ~90 dòng/giây:
 
 `dt=50..50 ms` — chênh lệch giữa nhỏ nhất và lớn nhất bằng 0.
 
-## Hai lỗi đáng ghi lại
+## Bốn lỗi đáng ghi lại
 
 **bxCAN kẹt trong init mode.** Mọi `HAL_CAN_AddTxMessage()` trả lỗi trong khi các
 thanh ghi lỗi CAN sạch bong và phần còn lại của firmware chạy hoàn hảo. Dấu hiệu
@@ -133,6 +154,21 @@ dominant. Sửa bằng cách ép `PB6` lên mức recessive ngay trong `MX_GPIO_
 đúng **một dòng đầu tiên** được gửi đi. `SPI_DMATransmitCplt` thì **không** đối
 xứng — nó gọi callback trực tiếp, nên đường LCD không cần ngắt tương ứng.
 
+**Bus-Off không tự phục hồi, và `hcan.State` không hề hay biết.** CAN2 bị đẩy tới
+`TEC=248`, `EPV`, `BOFF` — tức đã tự ngắt khỏi bus. Nhưng `AutoBusOff` đang để
+`DISABLE`, nên nó không bao giờ tự quay lại; tệ hơn, trạng thái HAL vẫn là
+`HAL_CAN_STATE_LISTENING`, nên đoạn phục hồi chỉ kiểm tra `State` không bắt được
+gì cả và bộ điều khiển nằm chết vĩnh viễn. Giờ đoạn đó kiểm tra thêm bit `BOFF`
+trong `ESR`.
+
+**Hai sự kiện khác nhau mà chung một nhãn log thì log thành vô dụng.** Dòng
+"Node 2 phát đi" và dòng "Node 1 nhận được" từng cùng in nhãn `N2->N1`. Nhìn vào
+log thấy hai chiều qua lại đều đặn, rất thuyết phục — trong khi thực tế bus chết
+hoàn toàn và mọi dòng đó đều chỉ là một phía tự phát. Mất một vòng gỡ lỗi mới nhận
+ra. Nhãn bây giờ nói rõ **ai làm gì**: `N1 sent` / `N1 GOT` / `N2 sent` / `N2 GOT`,
+và vài khung nhận đầu tiên luôn in bất kể công tắc trace — câu hỏi "có nhận được
+gì không" không được phép là thứ mà cấu hình log có thể giấu đi.
+
 ## Xung đột chân, và cách né
 
 Đặc tả có cảnh báo *"Allow to re-init GPIO to switch between CAN transceiver and
@@ -143,35 +179,89 @@ CAN2_TX  = PB6        LCD_PWM (đèn nền) = PB6      ← trùng
 CAN1_TX  = PA12       CAN1_RX = PA11               ← không trùng gì
 ```
 
-Chọn CAN1 ngay từ đầu khiến vấn đề biến mất hoàn toàn, không cần chuyển đổi GPIO
-qua lại. Cần lưu ý thêm: `PA11`/`PA12` đồng thời là `USB_OTG_FS D−/D+`, nên cắm
-cáp USB của board vào máy tính sẽ kéo `CAN1_RX` xuống dominant qua điện trở 15 kΩ
-của host và làm chết CAN — cấp nguồn qua cổng 5VDC thay vì USB.
+Ở bản hai board, chọn CAN1 ngay từ đầu khiến vấn đề biến mất — Node 2 nằm ở board
+khác nên CAN2 không cần dùng tới.
+
+Bản một board thì buộc phải đối mặt. STM32F405 có đúng một cách ánh xạ AF9 thay thế
+cho CAN2 (`PB12`=RX, `PB13`=TX), và đó là điều gợi ý "Remap" của trainer nhắm tới.
+
+**Nhưng remap không hoạt động trên board này** — kiểm chứng trên phần cứng:
+
+| Quan sát | Suy ra |
+|---|---|
+| CAN1 báo `LEC=ack`, không phải `bit-rec` | CAN1 đọc lại đúng từng bit nó phát → vòng TX→transceiver→bus→RX của nó lành lặn, khung thật sự nằm trên bus |
+| CAN2 báo `REC=0` mà không nhận được gì | đường RX không phải nhiễu, mà **im lặng tuyệt đối**. Bus có nối nhưng hỏng thì `REC` phải tăng; bus không nối thì `REC` đứng ở 0 |
+
+`REC=0` là chỉ số quyết định. Transceiver CAN2 của board được hàn cứng vào
+`PB5`/`PB6` — **remap dời được chân của con chip, không dời được đường mạch.**
+
+Mẹo chẩn đoán: cho bộ điều khiển nghi ngờ chạy `CAN_MODE_SILENT` trước. Nó không
+phát được nên không thể sinh lỗi bit và không thể vào bus-off, nên mọi thứ nó báo
+về việc *nhận* đều sạch, không lẫn hệ quả của việc phát.
+
+**Cách xử lý, và vì sao xung đột chân hoá ra không thành vấn đề:** trả CAN2 về
+`PB5`/`PB6` và để nó dùng chung `PB6` với đèn nền LCD. `CAN2_TX` lúc rỗi ở mức
+recessive (cao = đèn sáng), còn một khung 130 bit ở 500 kbit/s chỉ giữ chân đó
+trong 260 µs của mỗi chu kỳ 20 ms — đèn nền mờ đi **dưới 1%**, mắt không thấy
+được. Chính cái xung đột mà toàn bộ nỗ lực remap muốn né, hoá ra không đáng né.
+
+Cài đặt nằm trong khối `USER CODE` của `HAL_CAN_MspInit()` (công tắc
+`NODE2SIM_CAN2_DEFAULT_PINS` trong `node2sim.h`), nên file `.ioc` vẫn giữ nguyên
+gán `PB12`/`PB13` và không bao giờ cần generate lại.
+
+Một lưu ý khác về chân: `PA11`/`PA12` đồng thời là `USB_OTG_FS D−/D+`, nên cắm cáp
+USB của board vào máy tính sẽ kéo `CAN1_RX` xuống dominant qua điện trở 15 kΩ của
+host và làm chết CAN — cấp nguồn qua cổng 5VDC thay vì USB.
 
 ## Công tắc biên dịch
 
 | Công tắc | Ý nghĩa |
 |---|---|
-| `NODE1_SELFTEST` | `0` chạy thật; `1` chạy loopback với Node 2 giả lập bằng phần mềm, không cần board thứ hai |
 | `NODE1_DIAG` | Bảng tổng kết 2 giây, `dt=` mỗi lần phát, và bản in thô các thanh ghi CAN |
-| `NODE1_TRACE_FRAMES` | In từng khung, có nhãn rõ node nào gửi cho node nào |
-| `NODE1_USE_LCD` | Tắt hẳn phần LCD |
+| `NODE1_TRACE_FRAMES` | In từng khung. `0` chỉ còn dòng `[2s]` — dễ đọc hơn nhiều khi đang chẩn đoán, vì dòng tổng kết dài không còn bị hàng trăm dòng trace đẩy ra khỏi hàng đợi log |
+| `NODE1_USE_LCD` | Tắt hẳn phần LCD, để một lỗi màn hình không bị nhầm thành lỗi bus |
+| `NODE2SIM_LISTEN_ONLY` | Đặt CAN2 vào `CAN_MODE_SILENT` và ngừng phát. Bộ điều khiển khi đó không thể sinh lỗi bit, không thể vào bus-off — nên những gì nó báo về việc *nhận* là sạch. Đây là công tắc đã phân định được "không nghe được" với "không nói được" |
+| `NODE2SIM_CAN2_DEFAULT_PINS` | `1` bỏ qua remap `PB12`/`PB13` và trả CAN2 về `PB5`/`PB6`, nơi transceiver thật sự nằm |
+| `LCD_REFRESH_MS` | Nhịp vẽ lại màn. Không phải tuỳ chọn thẩm mỹ: khung về mỗi ~20 ms còn vẽ đủ 8 dòng mất ~29 ms, nên vẽ theo mỗi khung sẽ khởi động lại lượt vẽ trước khi nó kịp xong, và những dòng không bao giờ vẽ tới lại đúng là những dòng mới nhất |
 | `LCD_TEST_PATTERN` / `LCD_TEST_BACKLIGHT` / `LCD_TEST_PINSCAN` | Ba mức kiểm tra màn hình khi đưa vào hoạt động lần đầu, thu hẹp dần từ "panel có chạy không" tới "chân nào điều khiển đèn nền" |
 
 ## Trạng thái nghiệm thu
 
-Đã kiểm chứng trên **hai board thật, bus CAN thật** (`BTR=01290005` — không có bit
-SILM/LBKM nên đúng là chế độ normal):
+Bản `one-board/` đã chạy đủ **7/7** tiêu chí chấm phần code, trên bus CAN thật
+(`BTR=01290005` — không có bit SILM/LBKM nên đúng là chế độ normal):
 
-- Khung `0x012` phát đúng chu kỳ 50 ms, sai lệch 0 ms
-- Node 2 nhận đủ 40/40 khung mỗi cửa sổ 2 giây và **thẩm định đúng toàn bộ**:
-  byte0/1 khớp giá trị nó đã gửi, byte2 = tổng, checksum byte 6, các byte đệm bằng 0
-- Chiều ngược lại chạy đều 20 ms
-- Không một lỗi bus nào trên cả hai bộ điều khiển
+```
+[2s] TX=40 RX=100  dt=50..50 ms  CAN1 LEC=ok TEC=0 REC=0
+     dbg isr=100 getErr=0 lastId=0A2 txErr=0  TSR=1C000003 BTR=01290005
+[2s] N2 TX=100 pass=40 fail=0  CAN2 LEC=ok TEC=0 REC=0
+```
 
-**Chưa nghiệm thu:** phần hiển thị LCD. Driver đã viết xong và build sạch, nhưng
-module màn hình trên board thử nghiệm không lên được đèn nền — đây là vấn đề phần
-cứng nằm ngoài phạm vi firmware, chưa loại trừ được nên chưa dám coi là đã xong.
+| Tiêu chí | Bằng chứng |
+|---|---|
+| Phát `0x012` | `TX=40` mỗi 2 giây = 2000 ÷ 50 ms |
+| Đúng hạn 50 ms ±1 ms | `dt=50..50 ms` — nhỏ nhất bằng lớn nhất, sai lệch **0 ms** |
+| Byte 0/1 = giá trị nhận được | Node 2 đối chiếu với lịch sử nó đã gửi |
+| Byte 2 = tổng | `2C+11=3D`, `2E+15=43`, `31+1B=4C`… kiểm tay đều khớp |
+| Checksum byte 6 | Node 2 tự tính lại độc lập, `fail=0` |
+| Hiển thị UART | log ở trên |
+| **Hiển thị log lên LCD** | 8 dòng đọc được trên màn, xen kẽ `CAn1`/`CAn2` |
+
+`RX=100` là các khung 20 ms từ Node 2 dội về; `TSR` có `TXOK0=1` nên khung phát đi
+được ACK thật sự, không phải chỉ nạp được vào mailbox.
+
+Bản `two-boards/` đã nghiệm thu phần CAN từ trước với cùng kết quả
+(`dt=50..50 ms`, `pass=40 fail=0`), nhưng LCD thì chưa chạy được ở thời điểm đó.
+
+### Về phần LCD
+
+Màn hình im lặng suốt một thời gian dài, và **nguyên nhân không nằm ở driver**.
+Bộ lệnh khởi tạo, ánh xạ chân và đường vẽ DMA đều đúng ngay từ đầu — sau này đối
+chiếu với datasheet ST7789V gốc của Sitronix thì từng mã lệnh đều khớp, và tài
+liệu cũng không hề đòi hỏi trình tự power/gamma bắt buộc nào.
+
+Có một bảng lệnh lưu truyền trên mạng với `B1/B2/B3` (frame rate) và `C0`–`C4`
+(power control) — **đó là của ST7735**, một con chip khác. Đưa bộ lệnh đó vào một
+ST7789V thật chỉ ghi giá trị vô nghĩa vào những thanh ghi không liên quan.
 
 ---
 
